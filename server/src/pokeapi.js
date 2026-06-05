@@ -41,9 +41,16 @@ export async function fetchPokemon(nameOrId) {
   };
 }
 
-// Normalised move record.
+// Normalised move record, including the metadata needed to simulate
+// status/non-damaging effects (stat changes, ailments, healing, drain...).
 export async function fetchMove(nameOrId) {
   const data = await getJson(`${BASE}/move/${String(nameOrId).toLowerCase()}`);
+  const en = (arr, key) =>
+    arr?.find((e) => e.language?.name === 'en')?.[key] ?? '';
+  const shortEffect = (en(data.effect_entries, 'short_effect') || '').replace(
+    '$effect_chance',
+    String(data.effect_chance ?? ''),
+  );
   return {
     id: data.id,
     name: data.name,
@@ -53,6 +60,30 @@ export async function fetchMove(nameOrId) {
     pp: data.pp,
     priority: data.priority,
     damageClass: data.damage_class.name, // physical | special | status
+    target: data.target?.name || 'selected-pokemon',
+    effectChance: data.effect_chance,
+    shortEffect,
+    // [{ change, stat }] — e.g. Swords Dance => [{ change: 2, stat: 'attack' }]
+    statChanges: (data.stat_changes || []).map((s) => ({
+      change: s.change,
+      stat: s.stat.name,
+    })),
+    meta: data.meta
+      ? {
+          ailment: data.meta.ailment?.name || 'none', // paralysis|burn|poison|freeze|sleep|none|...
+          ailmentChance: data.meta.ailment_chance || 0,
+          healing: data.meta.healing || 0, // % of max HP
+          drain: data.meta.drain || 0, // +heal / -recoil, % of damage
+          flinchChance: data.meta.flinch_chance || 0,
+          statChance: data.meta.stat_chance || 0,
+          critRate: data.meta.crit_rate || 0,
+          minHits: data.meta.min_hits || null,
+          maxHits: data.meta.max_hits || null,
+        }
+      : {
+          ailment: 'none', ailmentChance: 0, healing: 0, drain: 0,
+          flinchChance: 0, statChance: 0, critRate: 0, minHits: null, maxHits: null,
+        },
   };
 }
 

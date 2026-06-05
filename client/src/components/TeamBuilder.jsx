@@ -1,24 +1,63 @@
 import { useEffect, useState } from 'react';
 import { getPokemonList, getPokemon } from '../api/pokeapi';
+import { teamsApi } from '../api/auth';
 import { STAT_KEYS } from '../utils/natures';
 import PokemonEditor from './PokemonEditor.jsx';
 
 const emptyEvs = () => Object.fromEntries(STAT_KEYS.map((k) => [k, 0]));
 const fullIvs = () => Object.fromEntries(STAT_KEYS.map((k) => [k, 31]));
 
-// Builds a team of up to 6 Pokemon, all data fetched dynamically from PokeAPI.
-export default function TeamBuilder({ onReady }) {
+// Builds/edits a team of up to 6 Pokemon and saves it to the user's account.
+// All data fetched dynamically from PokeAPI.
+export default function TeamBuilder({ initialTeam, onSaved, onCancel }) {
   const [names, setNames] = useState([]);
   const [pick, setPick] = useState('');
-  const [team, setTeam] = useState([]); // slots
+  const [team, setTeam] = useState([]); // hydrated slots
   const [editing, setEditing] = useState(0);
-  const [trainerName, setTrainerName] = useState('');
+  const [teamName, setTeamName] = useState(initialTeam?.name || '');
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [hydrating, setHydrating] = useState(!!initialTeam);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     getPokemonList(386).then(setNames).catch((e) => setError(String(e)));
   }, []);
+
+  // Re-hydrate a saved team (fetch each species' data for the editor).
+  useEffect(() => {
+    let cancelled = false;
+    async function hydrate() {
+      if (!initialTeam?.slots?.length) {
+        setHydrating(false);
+        return;
+      }
+      try {
+        const slots = await Promise.all(
+          initialTeam.slots.map(async (s) => {
+            const data = await getPokemon(s.species);
+            return {
+              species: data.name,
+              data,
+              evs: { ...emptyEvs(), ...(s.evs || {}) },
+              ivs: { ...fullIvs(), ...(s.ivs || {}) },
+              nature: s.nature || 'hardy',
+              moves: s.moves || [],
+            };
+          }),
+        );
+        if (!cancelled) setTeam(slots);
+      } catch (e) {
+        if (!cancelled) setError('Failed to load saved team.');
+      } finally {
+        if (!cancelled) setHydrating(false);
+      }
+    }
+    hydrate();
+    return () => {
+      cancelled = true;
+    };
+  }, [initialTeam]);
 
   async function addPokemon(name) {
     if (!name || team.length >= 6) return;
@@ -32,7 +71,6 @@ export default function TeamBuilder({ onReady }) {
         evs: emptyEvs(),
         ivs: fullIvs(),
         nature: 'hardy',
-        // Seed with the first four legal moves so the team is battle-ready.
         moves: data.movePool.slice(0, 4),
       };
       setTeam((prev) => {
@@ -41,7 +79,7 @@ export default function TeamBuilder({ onReady }) {
         return next;
       });
       setPick('');
-    } catch (e) {
+    } catch {
       setError(`Could not load "${name}". Check the spelling.`);
     } finally {
       setLoading(false);
@@ -56,37 +94,48 @@ export default function TeamBuilder({ onReady }) {
     setEditing((e) => Math.max(0, e - (index <= e ? 1 : 0)));
   }
 
-  function findMatch() {
-    if (team.length === 0) {
-      setError('Add at least one Pokémon.');
-      return;
-    }
+  async function save() {
+    if (!teamName.trim()) return setError('Give your team a name.');
+    if (team.length === 0) return setError('Add at least one Pokémon.');
     for (const s of team) {
-      const chosen = (s.moves || []).filter(Boolean);
-      if (chosen.length === 0) {
-        setError(`${s.species} needs at least one move.`);
-        return;
+      if ((s.moves || []).filter(Boolean).length === 0) {
+        return setError(`${s.species} needs at least one move.`);
       }
     }
-    const config = team.map((s) => ({
+    const slots = team.map((s) => ({
       species: s.species,
       evs: s.evs,
       ivs: s.ivs,
       nature: s.nature,
       moves: (s.moves || []).filter(Boolean),
     }));
-    onReady(config, trainerName.trim() || 'Trainer');
+    setSaving(true);
+    setError(null);
+    try {
+      const res = initialTeam?.id
+        ? await teamsApi.update(initialTeam.id, teamName.trim(), slots)
+        : await teamsApi.create(teamName.trim(), slots);
+      onSaved(res.teams);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (hydrating) {
+    return <p className="text-center text-slate-400 mt-20">Loading team…</p>;
   }
 
   return (
     <div className="max-w-5xl mx-auto">
       <div className="flex flex-wrap items-end gap-3 mb-4">
         <div>
-          <label className="block text-[10px] text-slate-400 mb-1">Trainer name</label>
+          <label className="block text-[10px] text-slate-400 mb-1">Team name</label>
           <input
-            value={trainerName}
-            onChange={(e) => setTrainerName(e.target.value)}
-            placeholder="Ash"
+            value={teamName}
+            onChange={(e) => setTeamName(e.target.value)}
+            placeholder="My Rain Team"
             className="bg-slate-900 border border-slate-600 rounded px-3 py-2 text-sm"
           />
         </div>
@@ -114,13 +163,18 @@ export default function TeamBuilder({ onReady }) {
             </button>
           </div>
         </div>
-        <button
-          onClick={findMatch}
-          disabled={team.length === 0}
-          className="ml-auto px-6 py-3 rounded-lg bg-yellow-400 text-black font-pixel text-[10px] hover:bg-yellow-300 disabled:opacity-40"
-        >
-          Find Match ⚔
-        </button>
+        <div className="ml-auto flex gap-2">
+          <button onClick={onCancel} className="px-4 py-3 rounded-lg bg-slate-700 hover:bg-slate-600 text-sm">
+            Cancel
+          </button>
+          <button
+            onClick={save}
+            disabled={saving || team.length === 0}
+            className="px-6 py-3 rounded-lg bg-yellow-400 text-black font-pixel text-[10px] hover:bg-yellow-300 disabled:opacity-40"
+          >
+            {saving ? 'Saving…' : 'Save Team'}
+          </button>
+        </div>
       </div>
 
       {error && <p className="text-red-400 text-sm mb-3">⚠ {error}</p>}
@@ -155,7 +209,6 @@ export default function TeamBuilder({ onReady }) {
         })}
       </div>
 
-      {/* Editor for the selected slot */}
       {team[editing] ? (
         <PokemonEditor
           slot={team[editing]}

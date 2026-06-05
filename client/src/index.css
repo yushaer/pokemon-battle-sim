@@ -26,3 +26,32 @@ body {
   background: #475569;
   border-radius: 3px;
 }
+
+/* ---- Move effect animations (type-keyed, asset-free) ---- */
+@keyframes fx-burst {
+  0% { transform: scale(0.2); opacity: 0.9; }
+  100% { transform: scale(2.4); opacity: 0; }
+}
+@keyframes fx-ring {
+  0% { transform: scale(0.3); opacity: 0.85; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+@keyframes fx-particle {
+  0% { transform: translate(0, 0) scale(1); opacity: 1; }
+  100% { transform: translate(var(--dx, 0), var(--dy, 0)) scale(0.3); opacity: 0; }
+}
+@keyframes fx-flash {
+  0% { opacity: 0; }
+  35% { opacity: 0.3; }
+  100% { opacity: 0; }
+}
+@keyframes fx-projectile {
+  0% { transform: translate(var(--sx, 0), var(--sy, 0)) scale(0.5); opacity: 0; }
+  25% { opacity: 1; }
+  100% { transform: translate(0, 0) scale(1); opacity: 1; }
+}
+@keyframes fx-slash {
+  0% { transform: rotate(-40deg) scaleX(0); opacity: 0; }
+  30% { opacity: 1; }
+  100% { transform: rotate(-40deg) scaleX(1.5); opacity: 0; }
+}

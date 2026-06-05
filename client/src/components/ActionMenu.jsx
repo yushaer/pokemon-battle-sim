@@ -5,6 +5,7 @@ import { typeBadge } from '../utils/typeColors';
 // `forceSwitch` forces the switch view (after a faint) and hides move options.
 export default function ActionMenu({ active, team, activeIndex, disabled, forceSwitch, onMove, onSwitch }) {
   const [view, setView] = useState('main'); // main | switch
+  const [hovered, setHovered] = useState(null); // index of move being hovered
 
   useEffect(() => {
     setView(forceSwitch ? 'switch' : 'main');
@@ -39,28 +40,52 @@ export default function ActionMenu({ active, team, activeIndex, disabled, forceS
     );
   }
 
+  const anyPp = active.moves.some((m) => (m.currentPp ?? m.pp) > 0);
+
   return (
-    <div className="bg-slate-800 border-2 border-slate-700 rounded-lg p-3">
+    <div className="relative bg-slate-800 border-2 border-slate-700 rounded-lg p-3">
       {view === 'main' ? (
         <>
+          {/* Hover tooltip floats above the move grid. */}
+          {hovered != null && active.moves[hovered] && (
+            <div className="absolute bottom-full left-0 right-0 mb-2 z-30">
+              <MoveTooltip move={active.moves[hovered]} />
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-2">
-            {active.moves.map((m, i) => (
-              <button
-                key={i}
-                onClick={() => onMove(i)}
-                className="text-left rounded-lg px-3 py-2 bg-slate-700 hover:bg-slate-600 border border-slate-600 transition"
-              >
-                <div className="flex items-center justify-between">
-                  <span className="font-pixel text-[9px]">{m.name}</span>
-                  <span className={`text-[7px] uppercase px-1 py-0.5 rounded text-white ${typeBadge(m.type)}`}>
-                    {m.type}
-                  </span>
-                </div>
-                <div className="text-[9px] text-slate-400 mt-1">
-                  {m.damageClass} · {m.power ? `Pwr ${m.power}` : '—'} · {m.accuracy ?? '∞'}%
-                </div>
-              </button>
-            ))}
+            {active.moves.map((m, i) => {
+              const cur = m.currentPp ?? m.pp;
+              const noPp = cur <= 0;
+              const blocked = noPp && anyPp; // out of PP but other moves remain
+              const ppColor = noPp ? 'text-red-400' : cur <= m.pp * 0.25 ? 'text-yellow-400' : 'text-slate-400';
+              return (
+                <button
+                  key={i}
+                  disabled={blocked}
+                  onClick={() => onMove(i)}
+                  onMouseEnter={() => setHovered(i)}
+                  onMouseLeave={() => setHovered((h) => (h === i ? null : h))}
+                  onFocus={() => setHovered(i)}
+                  onBlur={() => setHovered((h) => (h === i ? null : h))}
+                  className={`text-left rounded-lg px-3 py-2 border border-slate-600 transition ${
+                    blocked ? 'bg-slate-900 opacity-40 cursor-not-allowed' : 'bg-slate-700 hover:bg-slate-600'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-pixel text-[9px]">{m.name}</span>
+                    <span className={`text-[7px] uppercase px-1 py-0.5 rounded text-white ${typeBadge(m.type)}`}>
+                      {m.type}
+                    </span>
+                  </div>
+                  <div className="text-[9px] text-slate-400 mt-1 flex justify-between">
+                    <span>
+                      {m.damageClass} · {m.power ? `Pwr ${m.power}` : '—'} · {m.accuracy ?? '∞'}%
+                    </span>
+                    <span className={ppColor}>PP {cur}/{m.pp}</span>
+                  </div>
+                </button>
+              );
+            })}
           </div>
           <button
             onClick={() => setView('switch')}
@@ -111,6 +136,87 @@ function SwitchGrid({ team, activeIndex, onSwitch, mustSwitch }) {
           </button>
         );
       })}
+    </div>
+  );
+}
+
+const CATEGORY_STYLE = { physical: 'bg-red-600', special: 'bg-blue-600', status: 'bg-gray-500' };
+const STAT_LABEL = {
+  attack: 'Atk',
+  defense: 'Def',
+  'special-attack': 'SpA',
+  'special-defense': 'SpD',
+  speed: 'Spe',
+  accuracy: 'Accuracy',
+  evasion: 'Evasion',
+};
+const pretty = (s) => (s || '').replace(/-/g, ' ');
+
+// Builds a list of human-readable secondary-effect strings from move metadata.
+function describeEffects(move) {
+  const out = [];
+  const meta = move.meta || {};
+  const isStatus = move.damageClass === 'status';
+  const toSelf = (move.target || '').includes('user');
+
+  for (const sc of move.statChanges || []) {
+    const label = STAT_LABEL[sc.stat] || sc.stat;
+    const sign = sc.change > 0 ? `+${sc.change}` : `${sc.change}`;
+    const who = toSelf ? 'self' : 'target';
+    const chance = !isStatus && meta.statChance && meta.statChance < 100 ? `${meta.statChance}% ` : '';
+    out.push(`${chance}${sign} ${label} (${who})`);
+  }
+  if (meta.ailment && meta.ailment !== 'none') {
+    const name = pretty(meta.ailment);
+    out.push(isStatus ? `Inflicts ${name}` : `${meta.ailmentChance || 100}% to inflict ${name}`);
+  }
+  if (meta.healing > 0) out.push(`Heals ${meta.healing}% of max HP`);
+  if (meta.drain > 0) out.push(`Drains ${meta.drain}% of damage dealt`);
+  if (meta.drain < 0) out.push(`${Math.abs(meta.drain)}% recoil damage`);
+  if (meta.flinchChance > 0) out.push(`${meta.flinchChance}% chance to flinch`);
+  if (meta.critRate > 0) out.push('High critical-hit ratio');
+  return out;
+}
+
+// Rich tooltip shown when hovering a move in battle.
+function MoveTooltip({ move }) {
+  const effects = describeEffects(move);
+  return (
+    <div className="bg-slate-900 border border-slate-500 rounded-lg p-3 shadow-2xl text-left">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="font-pixel text-[9px] flex-1">{move.name}</span>
+        <span className={`text-[7px] uppercase px-1 py-0.5 rounded text-white ${typeBadge(move.type)}`}>
+          {move.type}
+        </span>
+        <span className={`text-[7px] uppercase px-1 py-0.5 rounded text-white ${CATEGORY_STYLE[move.damageClass]}`}>
+          {move.damageClass}
+        </span>
+      </div>
+      <div className="grid grid-cols-4 gap-1 text-[9px] text-center mb-2">
+        <Stat label="Power" value={move.power ?? '—'} />
+        <Stat label="Acc" value={move.accuracy != null ? `${move.accuracy}%` : '∞'} />
+        <Stat label="PP" value={`${move.currentPp ?? move.pp}/${move.pp}`} />
+        <Stat label="Prio" value={move.priority ?? 0} />
+      </div>
+      {move.shortEffect && (
+        <p className="text-[10px] text-slate-300 leading-snug mb-1">{move.shortEffect}</p>
+      )}
+      {effects.length > 0 && (
+        <ul className="text-[9px] text-cyan-300 space-y-0.5">
+          {effects.map((e, i) => (
+            <li key={i}>• {e}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function Stat({ label, value }) {
+  return (
+    <div className="bg-slate-800 rounded py-1">
+      <div className="text-[7px] text-slate-400">{label}</div>
+      <div className="font-bold text-slate-100">{value}</div>
     </div>
   );
 }

@@ -36,6 +36,8 @@ export async function getPokemon(nameOrId) {
 
 export async function getMove(name) {
   const d = await getJson(`${BASE}/move/${String(name).toLowerCase()}`);
+  const en = d.effect_entries?.find((e) => e.language?.name === 'en');
+  const shortEffect = (en?.short_effect || '').replace('$effect_chance', String(d.effect_chance ?? ''));
   return {
     name: d.name,
     type: d.type.name,
@@ -44,5 +46,10 @@ export async function getMove(name) {
     pp: d.pp,
     priority: d.priority,
     damageClass: d.damage_class.name,
+    shortEffect,
+    target: d.target?.name || 'selected-pokemon',
+    ailment: d.meta?.ailment?.name || 'none',
+    healing: d.meta?.healing || 0,
+    statChanges: (d.stat_changes || []).map((s) => ({ change: s.change, stat: s.stat.name })),
   };
 }

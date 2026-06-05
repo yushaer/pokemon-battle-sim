@@ -6,7 +6,16 @@
 // discrete events ("move", "damage", "faint", ...) that the client plays back
 // one at a time with delays so HP bars drain sequentially.
 
-import { calcDamage, compareOrder, isChargeMove, CHARGE_MOVES } from './damage.js';
+import {
+  calcDamage,
+  compareOrder,
+  isChargeMove,
+  CHARGE_MOVES,
+  effectiveSpeed,
+  mapAilment,
+  statusImmune,
+  clampStage,
+} from './damage.js';
 
 let battleCounter = 0;
 
@@ -45,11 +54,6 @@ function opponentId(battle, playerId) {
   return battle.order.find((id) => id !== playerId);
 }
 
-function effectiveSpeed(pokemon) {
-  // Hook for status/item speed modifiers; paralysis etc. would go here.
-  return pokemon.stats.speed;
-}
-
 function aliveCount(player) {
   return player.team.filter((p) => !p.fainted).length;
 }
@@ -64,6 +68,14 @@ export function submitAction(battle, playerId, action) {
   if (me.charging) {
     battle.pending[playerId] = { type: 'move', moveIndex: me.charging.moveIndex, forced: true };
   } else {
+    // Reject a move with no PP left (unless every move is out of PP → Struggle).
+    if (action?.type === 'move') {
+      const mv = me.moves[action.moveIndex];
+      const anyPp = me.moves.some((m) => (m.currentPp ?? m.pp) > 0);
+      if (mv && (mv.currentPp ?? mv.pp) <= 0 && anyPp) {
+        return { accepted: false, reason: 'no-pp' };
+      }
+    }
     battle.pending[playerId] = action;
   }
 
@@ -117,6 +129,9 @@ export function resolveTurn(battle) {
     if (attacker.fainted) continue; // fainted before it could act
     executeMove(battle, id, battle.pending[id].moveIndex, events);
   }
+
+  // 4b. End-of-turn residual damage (burn / poison / toxic).
+  endOfTurn(battle, events);
 
   // 5. Clean up and decide next phase.
   battle.pending = {};
@@ -173,8 +188,15 @@ function doSwitch(battle, playerId, targetIndex, events, silentFrom = false) {
   const player = battle.players[playerId];
   const fromIndex = player.activeIndex;
   const leaving = player.team[fromIndex];
-  // Switching out clears charge state.
-  if (leaving) leaving.charging = null;
+  // Switching out clears charge state and resets stat stages / flinch
+  // (a major status condition, however, persists — as in the games).
+  if (leaving) {
+    leaving.charging = null;
+    leaving.semiInvulnerable = false;
+    leaving.flinched = false;
+    leaving.boosts = emptyBoosts();
+    leaving.volatile = { aquaRing: false, ingrained: false, leechSeed: false };
+  }
   player.activeIndex = targetIndex;
   const incoming = player.team[targetIndex];
   events.push({
@@ -189,41 +211,94 @@ function doSwitch(battle, playerId, targetIndex, events, silentFrom = false) {
   });
 }
 
+// Synthetic move used when a Pokemon has no PP left on any move.
+const STRUGGLE = {
+  name: 'struggle',
+  type: 'normal',
+  power: 50,
+  accuracy: null,
+  pp: 1,
+  priority: 0,
+  damageClass: 'physical',
+  target: 'selected-pokemon',
+  statChanges: [],
+  meta: {},
+  struggle: true,
+};
+
+function deductPp(move) {
+  if (move.currentPp != null) move.currentPp = Math.max(0, move.currentPp - 1);
+}
+
+// How many times a multi-hit move strikes this use.
+function hitCount(move) {
+  const mn = move.meta?.minHits;
+  const mx = move.meta?.maxHits;
+  if (!mx || mx <= 1) return 1;
+  if (mn === mx) return mn;
+  if (mn === 2 && mx === 5) {
+    const dist = [2, 2, 3, 3, 4, 5]; // standard 2–5 distribution
+    return dist[Math.floor(Math.random() * dist.length)];
+  }
+  return mn + Math.floor(Math.random() * (mx - mn + 1));
+}
+
 function executeMove(battle, attackerId, moveIndex, events) {
   const attacker = active(battle, attackerId);
   const defenderId = opponentId(battle, attackerId);
   const defender = active(battle, defenderId);
-  const move = attacker.moves[moveIndex];
+  let move = attacker.moves[moveIndex];
 
-  // --- multi-turn charge handling ---
+  // --- can the Pokemon act at all? (sleep / freeze / paralysis / flinch) ---
+  if (!canMove(attacker, attackerId, events)) {
+    attacker.charging = null;
+    attacker.semiInvulnerable = false;
+    return;
+  }
+
+  // --- out of PP? fall back to Struggle if NOTHING is usable ---
+  if (move.currentPp != null && move.currentPp <= 0) {
+    if (attacker.moves.some((m) => (m.currentPp ?? m.pp) > 0)) {
+      events.push({
+        type: 'status-fail',
+        side: attackerId,
+        text: `${cap(attacker.name)} has no PP left for that move!`,
+      });
+      return;
+    }
+    move = STRUGGLE;
+  }
+
+  // --- multi-turn charge handling (PP is paid on the charge turn) ---
   if (isChargeMove(move.name)) {
     const info = CHARGE_MOVES[move.name];
     if (!attacker.charging) {
-      // Turn 1: begin charging, become (maybe) semi-invulnerable.
+      deductPp(move);
       attacker.charging = { moveIndex, info };
       attacker.semiInvulnerable = !!info.invulnerable;
       events.push({
         type: 'move',
         side: attackerId,
         moveName: prettyMove(move.name),
+        moveType: move.type,
+        category: move.damageClass,
         text: `${cap(attacker.name)} used ${prettyMove(move.name)}!`,
       });
-      events.push({
-        type: 'charge',
-        side: attackerId,
-        text: `${cap(attacker.name)} ${info.message}`,
-      });
+      events.push({ type: 'charge', side: attackerId, text: `${cap(attacker.name)} ${info.message}` });
       return; // no damage on turn 1
     }
-    // Turn 2: release.
     attacker.charging = null;
     attacker.semiInvulnerable = false;
+  } else {
+    deductPp(move); // PP spent even on a miss, but not when unable to move
   }
 
   events.push({
     type: 'move',
     side: attackerId,
     moveName: prettyMove(move.name),
+    moveType: move.type,
+    category: move.damageClass,
     text: `${cap(attacker.name)} used ${prettyMove(move.name)}!`,
   });
 
@@ -237,52 +312,401 @@ function executeMove(battle, attackerId, moveIndex, events) {
     return;
   }
 
-  // --- status moves: acknowledged but effects not simulated ---
+  // --- status / non-damaging moves now have real effects ---
   if (move.damageClass === 'status' || !move.power) {
-    events.push({
-      type: 'status-fail',
-      side: attackerId,
-      text: `But nothing happened... (${prettyMove(move.name)} is a status move)`,
-    });
+    applyStatusMove(battle, attackerId, defenderId, move, events);
     return;
   }
 
-  // --- damage ---
-  const result = calcDamage(attacker, defender, move);
-  if (result.effectiveness === 0) {
+  // --- damage (multi-hit aware) ---
+  const hits = hitCount(move);
+  let total = 0;
+  let landed = 0;
+  for (let h = 0; h < hits; h++) {
+    if (defender.fainted) break;
+    const result = calcDamage(attacker, defender, move);
+    if (result.effectiveness === 0) {
+      events.push({ type: 'text', text: `It doesn't affect ${cap(defender.name)}...` });
+      return;
+    }
+    const newHp = Math.max(0, defender.currentHp - result.damage);
+    defender.currentHp = newHp;
+    total += result.damage;
+    landed += 1;
     events.push({
-      type: 'text',
-      text: `It doesn't affect ${cap(defender.name)}...`,
-    });
-    return;
-  }
-
-  const newHp = Math.max(0, defender.currentHp - result.damage);
-  defender.currentHp = newHp;
-
-  events.push({
-    type: 'damage',
-    side: defenderId, // the side LOSING hp
-    targetIndex: battle.players[defenderId].activeIndex,
-    amount: result.damage,
-    newHp,
-    maxHp: defender.maxHp,
-    effectiveness: result.effectiveness,
-    crit: result.crit,
-    text: effectivenessText(result.effectiveness, result.crit),
-  });
-
-  if (newHp === 0) {
-    defender.fainted = true;
-    defender.charging = null;
-    defender.semiInvulnerable = false;
-    events.push({
-      type: 'faint',
+      type: 'damage',
       side: defenderId,
       targetIndex: battle.players[defenderId].activeIndex,
-      text: `${cap(defender.name)} fainted!`,
+      amount: result.damage,
+      newHp,
+      maxHp: defender.maxHp,
+      effectiveness: result.effectiveness,
+      crit: result.crit,
+      text: effectivenessText(result.effectiveness, result.crit),
+    });
+    if (newHp === 0) {
+      faint(battle, defenderId, events);
+      break;
+    }
+  }
+  if (hits > 1 && landed > 0) {
+    events.push({ type: 'text', text: `Hit ${landed} time${landed > 1 ? 's' : ''}!` });
+  }
+
+  // Struggle recoil: 1/4 of the user's max HP.
+  if (move.struggle) {
+    const recoil = Math.max(1, Math.floor(attacker.maxHp / 4));
+    const hp = Math.max(0, attacker.currentHp - recoil);
+    attacker.currentHp = hp;
+    events.push({
+      type: 'damage',
+      side: attackerId,
+      targetIndex: battle.players[attackerId].activeIndex,
+      amount: recoil,
+      newHp: hp,
+      maxHp: attacker.maxHp,
+      effectiveness: 1,
+      crit: false,
+      text: `${cap(attacker.name)} is hit with recoil!`,
+    });
+    if (hp === 0) faint(battle, attackerId, events);
+    return;
+  }
+
+  // Drain still heals even if the target fainted; secondary effects don't.
+  applyDrainRecoil(battle, attackerId, move, total, events);
+  if (defender.fainted) return;
+
+  const meta = move.meta || {};
+  if (meta.ailment && meta.ailment !== 'none' && meta.ailmentChance > 0 && roll(meta.ailmentChance)) {
+    const st = mapAilment(meta.ailment, move.name);
+    if (st) applyStatus(defender, defenderId, st, events);
+  }
+  if (move.statChanges?.length && meta.statChance > 0 && roll(meta.statChance)) {
+    const toUser = (move.target || '').includes('user');
+    const tgtId = toUser ? attackerId : defenderId;
+    for (const sc of move.statChanges) applyBoost(active(battle, tgtId), tgtId, sc.stat, sc.change, events);
+  }
+  if (meta.flinchChance > 0 && roll(meta.flinchChance)) defender.flinched = true;
+}
+
+// Moves whose real effect is a recurring "volatile" not captured by PokeAPI's
+// numeric meta fields (meta.healing is 0 for these). Handled by name.
+const SPECIAL_MOVES = new Set(['aqua-ring', 'ingrain', 'leech-seed']);
+
+// Apply the primary effect of a non-damaging move.
+function applyStatusMove(battle, attackerId, defenderId, move, events) {
+  // Volatile/recurring moves are special-cased and fully handle their own text.
+  if (SPECIAL_MOVES.has(move.name)) {
+    applySpecialMove(battle, attackerId, defenderId, move, events);
+    return;
+  }
+
+  const attacker = active(battle, attackerId);
+  const defender = active(battle, defenderId);
+  const meta = move.meta || {};
+  let didSomething = false;
+
+  // Stat-stage changes (Swords Dance, Growl, ...). target decides self vs foe.
+  if (move.statChanges?.length) {
+    const toUser = (move.target || '').includes('user');
+    const tgtId = toUser ? attackerId : defenderId;
+    const tgt = active(battle, tgtId);
+    for (const sc of move.statChanges) {
+      if (applyBoost(tgt, tgtId, sc.stat, sc.change, events)) didSomething = true;
+    }
+  }
+
+  // Major status (Thunder Wave, Toxic, Will-O-Wisp, Spore, Rest, ...).
+  const st = mapAilment(meta.ailment, move.name);
+  if (st) {
+    const toUser = (move.target || '').includes('user'); // e.g. Rest
+    const tgtId = toUser ? attackerId : defenderId;
+    if (applyStatus(active(battle, tgtId), tgtId, st, events)) didSomething = true;
+  }
+
+  // Healing moves (Recover, Roost, ...).
+  if (meta.healing > 0) {
+    const heal = Math.max(1, Math.floor((attacker.maxHp * meta.healing) / 100));
+    const before = attacker.currentHp;
+    attacker.currentHp = Math.min(attacker.maxHp, attacker.currentHp + heal);
+    if (attacker.currentHp !== before) {
+      events.push({
+        type: 'heal',
+        side: attackerId,
+        targetIndex: battle.players[attackerId].activeIndex,
+        newHp: attacker.currentHp,
+        maxHp: attacker.maxHp,
+        text: `${cap(attacker.name)} restored its HP!`,
+      });
+      didSomething = true;
+    }
+  }
+
+  if (!didSomething) {
+    events.push({ type: 'status-fail', side: attackerId, text: 'But it failed!' });
+  }
+}
+
+function ensureVolatile(p) {
+  if (!p.volatile) p.volatile = { aquaRing: false, ingrained: false, leechSeed: false };
+  return p.volatile;
+}
+
+// Recurring "volatile" moves (Aqua Ring, Ingrain, Leech Seed). The actual HP
+// changes happen in endOfTurn(); here we just set the flag.
+function applySpecialMove(battle, attackerId, defenderId, move, events) {
+  const attacker = active(battle, attackerId);
+  const defender = active(battle, defenderId);
+  const av = ensureVolatile(attacker);
+  const dv = ensureVolatile(defender);
+
+  switch (move.name) {
+    case 'aqua-ring':
+      if (av.aquaRing) return fail(attackerId, events);
+      av.aquaRing = true;
+      events.push({ type: 'text', text: `${cap(attacker.name)} surrounded itself with a veil of water!` });
+      return true;
+    case 'ingrain':
+      if (av.ingrained) return fail(attackerId, events);
+      av.ingrained = true;
+      events.push({ type: 'text', text: `${cap(attacker.name)} planted its roots!` });
+      return true;
+    case 'leech-seed':
+      if (defender.types.includes('grass')) {
+        events.push({ type: 'text', text: `It doesn't affect ${cap(defender.name)}...` });
+        return false;
+      }
+      if (dv.leechSeed) return fail(attackerId, events);
+      dv.leechSeed = true;
+      events.push({ type: 'text', text: `${cap(defender.name)} was seeded!` });
+      return true;
+    default:
+      return false;
+  }
+}
+
+function fail(sideId, events) {
+  events.push({ type: 'status-fail', side: sideId, text: 'But it failed!' });
+  return false;
+}
+
+// --- low-level HP helpers used by residual effects ---
+function damagePokemon(battle, sideId, amount, text, events) {
+  const p = active(battle, sideId);
+  const before = p.currentHp;
+  const newHp = Math.max(0, before - amount);
+  p.currentHp = newHp;
+  events.push({
+    type: 'damage',
+    side: sideId,
+    targetIndex: battle.players[sideId].activeIndex,
+    amount: before - newHp,
+    newHp,
+    maxHp: p.maxHp,
+    effectiveness: 1,
+    crit: false,
+    text,
+  });
+  if (newHp === 0) faint(battle, sideId, events);
+  return before - newHp;
+}
+function healPokemon(battle, sideId, amount, text, events) {
+  const p = active(battle, sideId);
+  const before = p.currentHp;
+  p.currentHp = Math.min(p.maxHp, before + amount);
+  if (p.currentHp !== before) {
+    events.push({
+      type: 'heal',
+      side: sideId,
+      targetIndex: battle.players[sideId].activeIndex,
+      newHp: p.currentHp,
+      maxHp: p.maxHp,
+      text,
     });
   }
+  return p.currentHp - before;
+}
+
+// --- can-move gate ---
+function canMove(p, sideId, events) {
+  if (p.status === 'sleep') {
+    p.sleepTurns -= 1;
+    if (p.sleepTurns <= 0) {
+      p.status = null;
+      events.push({ type: 'text', text: `${cap(p.name)} woke up!` });
+      return true;
+    }
+    events.push({ type: 'text', text: `${cap(p.name)} is fast asleep.` });
+    return false;
+  }
+  if (p.status === 'freeze') {
+    if (Math.random() < 0.2) {
+      p.status = null;
+      events.push({ type: 'text', text: `${cap(p.name)} thawed out!` });
+      return true;
+    }
+    events.push({ type: 'text', text: `${cap(p.name)} is frozen solid!` });
+    return false;
+  }
+  if (p.flinched) {
+    events.push({ type: 'text', text: `${cap(p.name)} flinched and couldn't move!` });
+    return false;
+  }
+  if (p.status === 'paralysis' && Math.random() < 0.25) {
+    events.push({ type: 'text', text: `${cap(p.name)} is paralyzed! It can't move!` });
+    return false;
+  }
+  return true;
+}
+
+// --- stat-stage application; returns true if anything changed ---
+function applyBoost(target, sideId, statName, change, events) {
+  if (!target || target.fainted) return false;
+  if (!target.boosts) target.boosts = {};
+  const cur = target.boosts[statName] || 0;
+  const next = clampStage(cur + change);
+  if (next === cur) {
+    events.push({
+      type: 'text',
+      text: `${cap(target.name)}'s ${statLabel(statName)} won't go ${change > 0 ? 'any higher' : 'any lower'}!`,
+    });
+    return false;
+  }
+  target.boosts[statName] = next;
+  // Structured event so the client can update its live stat panel mid-animation.
+  events.push({
+    type: 'boost',
+    side: sideId,
+    stat: statName,
+    stage: next,
+    delta: next - cur,
+    text: `${cap(target.name)}'s ${statLabel(statName)} ${changeWord(change)}!`,
+  });
+  return true;
+}
+
+// --- status condition application; returns true if applied ---
+function applyStatus(target, sideId, status, events) {
+  if (!target || target.fainted) return false;
+  if (target.status) {
+    events.push({ type: 'text', text: `But it failed!` });
+    return false;
+  }
+  if (statusImmune(status, target.types)) {
+    events.push({ type: 'text', text: `It doesn't affect ${cap(target.name)}...` });
+    return false;
+  }
+  target.status = status;
+  if (status === 'sleep') target.sleepTurns = 1 + Math.floor(Math.random() * 3);
+  if (status === 'toxic') target.toxicCounter = 1;
+  events.push({ type: 'status', side: sideId, status, text: statusInflictText(target.name, status) });
+  return true;
+}
+
+// --- drain (heal) / recoil on damaging moves ---
+function applyDrainRecoil(battle, attackerId, move, damageDealt, events) {
+  const drain = move.meta?.drain || 0;
+  if (!drain || !damageDealt) return;
+  const attacker = active(battle, attackerId);
+  if (drain > 0) {
+    const heal = Math.max(1, Math.floor((damageDealt * drain) / 100));
+    const before = attacker.currentHp;
+    attacker.currentHp = Math.min(attacker.maxHp, attacker.currentHp + heal);
+    if (attacker.currentHp !== before) {
+      events.push({
+        type: 'heal',
+        side: attackerId,
+        targetIndex: battle.players[attackerId].activeIndex,
+        newHp: attacker.currentHp,
+        maxHp: attacker.maxHp,
+        text: `${cap(attacker.name)} had its energy drained!`,
+      });
+    }
+  } else {
+    const recoil = Math.max(1, Math.floor((damageDealt * Math.abs(drain)) / 100));
+    const newHp = Math.max(0, attacker.currentHp - recoil);
+    attacker.currentHp = newHp;
+    events.push({
+      type: 'damage',
+      side: attackerId,
+      targetIndex: battle.players[attackerId].activeIndex,
+      amount: recoil,
+      newHp,
+      maxHp: attacker.maxHp,
+      effectiveness: 1,
+      crit: false,
+      text: `${cap(attacker.name)} is hit with recoil!`,
+    });
+    if (newHp === 0) faint(battle, attackerId, events);
+  }
+}
+
+// --- end-of-turn residual effects, in roughly the canonical order ---
+function endOfTurn(battle, events) {
+  const order = [...battle.order].sort(
+    (a, b) => effectiveSpeed(active(battle, b)) - effectiveSpeed(active(battle, a)),
+  );
+  for (const id of order) {
+    const p = active(battle, id);
+    if (p.fainted) continue;
+    const v = ensureVolatile(p);
+
+    // 1. Aqua Ring / Ingrain self-heal (1/16 max HP).
+    if (v.aquaRing) {
+      healPokemon(battle, id, Math.max(1, Math.floor(p.maxHp / 16)), `${cap(p.name)} is healed by Aqua Ring!`, events);
+    }
+    if (v.ingrained) {
+      healPokemon(battle, id, Math.max(1, Math.floor(p.maxHp / 16)), `${cap(p.name)} absorbed nutrients with its roots!`, events);
+    }
+    if (p.fainted) continue;
+
+    // 2. Leech Seed: the seeded Pokemon loses 1/8 and the opponent recovers it.
+    if (v.leechSeed) {
+      const drained = damagePokemon(battle, id, Math.max(1, Math.floor(p.maxHp / 8)), `${cap(p.name)}'s health is sapped by Leech Seed!`, events);
+      const oppId = opponentId(battle, id);
+      if (drained > 0 && !active(battle, oppId).fainted) {
+        healPokemon(battle, oppId, drained, null, events);
+      }
+    }
+    if (p.fainted) continue;
+
+    // 3. Burn / Poison / Toxic damage.
+    let dmg = 0;
+    let text = '';
+    if (p.status === 'burn') {
+      dmg = Math.max(1, Math.floor(p.maxHp / 16));
+      text = `${cap(p.name)} was hurt by its burn!`;
+    } else if (p.status === 'poison') {
+      dmg = Math.max(1, Math.floor(p.maxHp / 8));
+      text = `${cap(p.name)} was hurt by poison!`;
+    } else if (p.status === 'toxic') {
+      dmg = Math.max(1, Math.floor((p.maxHp * p.toxicCounter) / 16));
+      p.toxicCounter += 1;
+      text = `${cap(p.name)} was hurt by poison!`;
+    }
+    if (dmg > 0) damagePokemon(battle, id, dmg, text, events);
+  }
+  // Flinch only lasts the turn it was inflicted.
+  for (const id of battle.order) active(battle, id).flinched = false;
+}
+
+// --- faint helper ---
+function faint(battle, sideId, events) {
+  const p = active(battle, sideId);
+  p.fainted = true;
+  p.charging = null;
+  p.semiInvulnerable = false;
+  events.push({
+    type: 'faint',
+    side: sideId,
+    targetIndex: battle.players[sideId].activeIndex,
+    text: `${cap(p.name)} fainted!`,
+  });
+}
+
+function roll(chancePercent) {
+  return Math.random() * 100 < chancePercent;
 }
 
 // ---------- serialization ----------
@@ -297,6 +721,8 @@ export function publicPokemon(p) {
     maxHp: p.maxHp,
     currentHp: p.currentHp,
     fainted: p.fainted,
+    status: p.status || null,
+    boosts: p.boosts || emptyBoosts(),
     level: 100,
   };
 }
@@ -313,6 +739,8 @@ export function selfPokemon(p) {
     currentHp: p.currentHp,
     fainted: p.fainted,
     stats: p.stats,
+    status: p.status || null,
+    boosts: p.boosts || emptyBoosts(),
     level: 100,
     charging: p.charging ? prettyMove(p.moves[p.charging.moveIndex]?.name) : null,
     moves: p.moves.map((m) => ({
@@ -321,9 +749,15 @@ export function selfPokemon(p) {
       type: m.type,
       power: m.power,
       accuracy: m.accuracy,
-      pp: m.pp,
+      pp: m.maxPp ?? m.pp,
+      currentPp: m.currentPp ?? m.pp,
       priority: m.priority,
       damageClass: m.damageClass,
+      // Extra detail for the in-battle hover tooltip.
+      shortEffect: m.shortEffect || '',
+      target: m.target || 'selected-pokemon',
+      statChanges: m.statChanges || [],
+      meta: m.meta || null,
     })),
   };
 }
@@ -355,6 +789,54 @@ export function serializeFor(battle, playerId) {
 }
 
 // ---------- text helpers ----------
+
+function emptyBoosts() {
+  return {
+    attack: 0,
+    defense: 0,
+    'special-attack': 0,
+    'special-defense': 0,
+    speed: 0,
+    accuracy: 0,
+    evasion: 0,
+  };
+}
+
+const STAT_LABELS = {
+  attack: 'Attack',
+  defense: 'Defense',
+  'special-attack': 'Sp. Atk',
+  'special-defense': 'Sp. Def',
+  speed: 'Speed',
+  accuracy: 'accuracy',
+  evasion: 'evasiveness',
+};
+function statLabel(key) {
+  return STAT_LABELS[key] || key;
+}
+function changeWord(change) {
+  const n = Math.abs(change);
+  if (change > 0) return n >= 3 ? 'rose drastically' : n === 2 ? 'sharply rose' : 'rose';
+  return n >= 3 ? 'severely fell' : n === 2 ? 'harshly fell' : 'fell';
+}
+function statusInflictText(name, status) {
+  switch (status) {
+    case 'paralysis':
+      return `${cap(name)} is paralyzed! It may be unable to move!`;
+    case 'burn':
+      return `${cap(name)} was burned!`;
+    case 'poison':
+      return `${cap(name)} was poisoned!`;
+    case 'toxic':
+      return `${cap(name)} was badly poisoned!`;
+    case 'sleep':
+      return `${cap(name)} fell asleep!`;
+    case 'freeze':
+      return `${cap(name)} was frozen solid!`;
+    default:
+      return `${cap(name)} was afflicted!`;
+  }
+}
 
 function cap(s) {
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;

@@ -2,65 +2,94 @@
 
 A real-time, server-authoritative Pokémon battle simulator inspired by Pokémon
 Showdown. React + Vite + Tailwind on the front end, Node/Express + Socket.io on
-the back end, with all Pokémon/move data fetched dynamically from
-[PokeAPI](https://pokeapi.co/) — **nothing is hardcoded**.
+the back end, **user accounts + saved teams on MongoDB Atlas**, and all
+Pokémon/move data fetched dynamically from [PokeAPI](https://pokeapi.co/) —
+**nothing is hardcoded**.
+
+## Features
+
+- **Accounts** — register/login (JWT + bcrypt); sessions persist via localStorage.
+- **Saved teams** — build teams and store them on your account (MongoDB Atlas).
+- **Lobby & presence** — see who's online and their status (available / in queue / in battle).
+- **Direct challenges** — challenge a specific online user; they accept/decline.
+- **Random matchmaking** — or just queue for the next available opponent.
+- **Battle engine** — server-authoritative turns, type chart, crits/STAB, status
+  conditions (par/brn/psn/tox/slp/frz), stat stages, multi-turn & volatile moves.
 
 ## File structure
 
 ```
 pokemon-battle-sim/
 ├── server/                     # Node + Express + Socket.io (source of truth)
-│   ├── server.js               # HTTP + Socket.io entry point
-│   ├── package.json
+│   ├── server.js               # entry: connects Atlas, mounts REST + Socket.io
+│   ├── .env                    # MONGO_URI / JWT_SECRET (git-ignored — create this)
 │   └── src/
-│       ├── pokeapi.js          # cached PokeAPI fetch (species + moves)
-│       ├── natures.js          # 25 natures + multiplier helper
-│       ├── typechart.js        # full 18-type effectiveness chart
-│       ├── statCalc.js         # official Lv100 stat formulas + EV validation
-│       ├── damage.js           # damage formula, crit, STAB, turn order, charge moves
+│       ├── db.js               # MongoDB Atlas (Mongoose) connection
+│       ├── models/User.js      # user + embedded saved teams schema
+│       ├── auth.js             # register/login routes, JWT issue/verify, middleware
+│       ├── teams.js            # CRUD routes for saved teams (auth-protected)
+│       ├── realtime.js         # Socket.io JWT auth + connection wiring
+│       ├── presence.js         # online-user registry
+│       ├── lobbyHandler.js     # presence, random queue, direct challenges
+│       ├── battleManager.js    # live battle sessions + per-socket action handlers
+│       ├── teamBuilder.js      # builds battle Pokemon from config (re-fetches PokeAPI)
 │       ├── battleEngine.js     # turn resolution → ordered EVENT STREAM
-│       └── battleHandler.js    # matchmaking queue + socket orchestration
+│       ├── damage.js           # damage formula, stat stages, status helpers, turn order
+│       ├── statCalc.js         # official Lv100 stat formulas + EV validation
+│       ├── natures.js / typechart.js / pokeapi.js
 └── client/                     # React (Vite) + Tailwind + socket.io-client
-    ├── index.html
-    ├── vite.config.js / tailwind.config.js / postcss.config.js
-    ├── package.json
     └── src/
-        ├── main.jsx / App.jsx  # screen state machine: builder → queue → battle
-        ├── socket.js           # shared socket.io-client instance
-        ├── api/pokeapi.js      # front-end PokeAPI helper (team builder)
-        ├── utils/              # stats.js, natures.js, typeColors.js (UI mirror)
+        ├── App.jsx             # auth gate + screen flow: login → lobby → builder/battle
+        ├── socket.js           # token-authenticated socket (lazy connect)
+        ├── api/auth.js         # REST client (auth + teams) + token storage
+        ├── api/pokeapi.js      # front-end PokeAPI helper
+        ├── utils/              # stats.js, natures.js, typeColors.js
         └── components/
-            ├── TeamBuilder.jsx     # 6-slot team builder
-            ├── PokemonEditor.jsx   # EV/IV/Nature/move editor + live stats
-            ├── Matchmaking.jsx     # queue screen
+            ├── Login.jsx           # register / login
+            ├── Lobby.jsx           # teams, presence, challenges, matchmaking
+            ├── TeamBuilder.jsx     # build + save/load teams to account
+            ├── PokemonEditor.jsx   # EV/IV/Nature editor + live stats
+            ├── MoveSelector.jsx    # searchable move picker w/ move info
             ├── BattleScreen.jsx    # battlefield + staggered animation engine
-            ├── HealthBar.jsx       # smooth-draining HP/status bar
-            ├── BattleLog.jsx       # scrolling battle log
-            └── ActionMenu.jsx      # 2×2 move grid + switch sub-menu
+            ├── HealthBar.jsx / BattleLog.jsx / ActionMenu.jsx
 ```
 
 ## Running it
 
-Two terminals.
+**Prerequisite:** a MongoDB Atlas cluster (free tier is fine). In Atlas, create a
+DB user and allow your IP under Network Access, then grab the connection string.
 
 ```bash
 # 1) Backend
 cd server
 npm install
-npm run dev        # http://localhost:4000   (needs Node 18+ for global fetch)
+# create server/.env with MONGO_URI + JWT_SECRET (see the env table below)
+npm run dev                   # http://localhost:4000  (Node 18+)
 
 # 2) Frontend
 cd client
 npm install
-npm run dev        # http://localhost:5173
+npm run dev                   # http://localhost:5173
 ```
 
-Open **two browser tabs** at http://localhost:5173, build a team in each, and
-click **Find Match** in both to get paired.
+On startup the server logs `🗄️  Connected to MongoDB (...)`. Then open
+http://localhost:5173, **register an account**, build & save a team, and either
+**queue for a random match** or **challenge an online user**. To try the
+multiplayer flow locally, register a second account in another browser (or a
+private window) and challenge across the two.
 
-### Environment overrides
-- Server: `PORT` (default 4000), `CLIENT_ORIGIN` (default `http://localhost:5173`).
-- Client: `VITE_SERVER_URL` (default `http://localhost:4000`).
+### Environment (`server/.env`)
+| var | purpose | default |
+|-----|---------|---------|
+| `MONGO_URI` | MongoDB Atlas connection string (include a DB name, e.g. `/pokemon-battle-sim`) | — (required) |
+| `JWT_SECRET` | secret for signing JWTs | dev fallback (set this!) |
+| `PORT` | server port | `4000` |
+| `CLIENT_ORIGIN` | allowed CORS origin | `http://localhost:5173` |
+
+Client: `VITE_SERVER_URL` (default `http://localhost:4000`).
+
+> ⚠️ `server/.env` holds real credentials and is git-ignored — **never commit it**.
+> Keep real secrets out of `.env.example`.
 
 ## How a turn flows (the state flow)
 
