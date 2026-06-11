@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { typeBadge } from '../utils/typeColors';
+import { typeBadge, TYPE_HEX } from '../utils/typeColors';
 
 // Action menu: 2x2 move grid + a "Switch Pokémon" sub-menu.
 // `forceSwitch` forces the switch view (after a faint) and hides move options.
@@ -58,6 +58,7 @@ export default function ActionMenu({ active, team, activeIndex, disabled, forceS
               const noPp = cur <= 0;
               const blocked = noPp && anyPp; // out of PP but other moves remain
               const ppColor = noPp ? 'text-red-400' : cur <= m.pp * 0.25 ? 'text-yellow-400' : 'text-slate-400';
+              const hex = TYPE_HEX[m.type] || '#64748b';
               return (
                 <button
                   key={i}
@@ -67,9 +68,17 @@ export default function ActionMenu({ active, team, activeIndex, disabled, forceS
                   onMouseLeave={() => setHovered((h) => (h === i ? null : h))}
                   onFocus={() => setHovered(i)}
                   onBlur={() => setHovered((h) => (h === i ? null : h))}
-                  className={`text-left rounded-lg px-3 py-2 border border-slate-600 transition ${
-                    blocked ? 'bg-slate-900 opacity-40 cursor-not-allowed' : 'bg-slate-700 hover:bg-slate-600'
+                  className={`text-left rounded-lg px-3 py-2 border transition hover:-translate-y-0.5 hover:shadow-lg ${
+                    blocked ? 'bg-slate-900 opacity-40 cursor-not-allowed border-slate-700' : 'border-slate-600'
                   }`}
+                  style={
+                    blocked
+                      ? undefined
+                      : {
+                          borderLeft: `4px solid ${hex}`,
+                          background: `linear-gradient(135deg, ${hex}26 0%, rgba(51,65,85,0.9) 45%)`,
+                        }
+                  }
                 >
                   <div className="flex items-center justify-between">
                     <span className="font-pixel text-[9px]">{m.name}</span>

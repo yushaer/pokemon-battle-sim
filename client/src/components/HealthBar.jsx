@@ -1,3 +1,5 @@
+import { useEffect, useRef } from 'react';
+import gsap from 'gsap';
 import { typeBadge } from '../utils/typeColors';
 
 const STATUS_STYLES = {
@@ -9,16 +11,41 @@ const STATUS_STYLES = {
   freeze: { label: 'FRZ', cls: 'bg-cyan-500' },
 };
 
+// HP number that ticks down/up smoothly instead of jumping.
+function HpNumber({ value }) {
+  const ref = useRef(null);
+  const shown = useRef(value);
+  useEffect(() => {
+    const obj = { v: shown.current };
+    const tween = gsap.to(obj, {
+      v: value,
+      duration: 0.7,
+      ease: 'power1.out',
+      onUpdate: () => {
+        shown.current = obj.v;
+        if (ref.current) ref.current.textContent = Math.ceil(obj.v);
+      },
+    });
+    return () => tween.kill();
+  }, [value]);
+  return <span ref={ref}>{Math.ceil(value)}</span>;
+}
+
 // Presentational HP/status panel. The smooth "drain" is pure CSS: the width
 // transitions whenever `currentHp` changes, so the parent only has to update
 // the number during event playback.
 export default function HealthBar({ name, level = 100, currentHp, maxHp, types = [], status = null, showNumbers = false }) {
   const pct = maxHp > 0 ? Math.max(0, Math.min(100, (currentHp / maxHp) * 100)) : 0;
-  const color = pct > 50 ? 'bg-green-500' : pct > 20 ? 'bg-yellow-400' : 'bg-red-500';
+  const color =
+    pct > 50
+      ? 'linear-gradient(180deg, #86efac, #22c55e 60%, #16a34a)'
+      : pct > 20
+        ? 'linear-gradient(180deg, #fde68a, #facc15 60%, #ca8a04)'
+        : 'linear-gradient(180deg, #fca5a5, #ef4444 60%, #b91c1c)';
   const st = status ? STATUS_STYLES[status] : null;
 
   return (
-    <div className="bg-slate-100 text-slate-900 rounded-lg px-3 py-2 shadow-lg border-2 border-slate-800 w-60">
+    <div className="bg-gradient-to-b from-slate-50 to-slate-200 text-slate-900 rounded-xl px-3 py-2 shadow-lg border-2 border-slate-700 w-60 ring-1 ring-white/60">
       <div className="flex items-center justify-between mb-1">
         <span className="font-pixel text-[10px] capitalize">{name}</span>
         <div className="flex items-center gap-1">
@@ -32,11 +59,11 @@ export default function HealthBar({ name, level = 100, currentHp, maxHp, types =
       </div>
 
       <div className="flex items-center gap-1 mb-1">
-        <span className="text-[9px] font-bold text-yellow-600">HP</span>
-        <div className="flex-1 h-2.5 bg-slate-300 rounded-full overflow-hidden border border-slate-500">
+        <span className="text-[8px] font-bold text-amber-600 bg-slate-800 rounded px-1 py-0.5 leading-none">HP</span>
+        <div className="flex-1 h-3 bg-slate-700 rounded-full overflow-hidden border border-slate-500 shadow-inner">
           <div
-            className={`h-full ${color} transition-all duration-700 ease-out`}
-            style={{ width: `${pct}%` }}
+            className="h-full rounded-full transition-all duration-700 ease-out"
+            style={{ width: `${pct}%`, background: color }}
           />
         </div>
       </div>
@@ -53,8 +80,8 @@ export default function HealthBar({ name, level = 100, currentHp, maxHp, types =
           ))}
         </div>
         {showNumbers && (
-          <span className="text-[9px] font-mono">
-            {Math.ceil(currentHp)}/{maxHp}
+          <span className="text-[10px] font-mono font-bold">
+            <HpNumber value={currentHp} />/{maxHp}
           </span>
         )}
       </div>

@@ -47,6 +47,12 @@ export function effectiveSpeed(p) {
   return Math.floor(v);
 }
 
+// Accuracy/evasion stages use a 3-based ladder instead of the 2-based one.
+export function accStageMultiplier(stage) {
+  const s = Math.max(-6, Math.min(6, stage));
+  return s >= 0 ? (3 + s) / 3 : 3 / (3 - s);
+}
+
 // Returns { damage, effectiveness, crit, stab }.
 export function calcDamage(attacker, defender, move, { level = 100 } = {}) {
   // Status moves deal no damage here.

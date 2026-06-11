@@ -151,7 +151,23 @@ export default function PokemonEditor({ slot, onChange, onRemove }) {
                     <td className={`py-1 ${up ? 'text-green-400' : down ? 'text-red-400' : ''}`}>
                       {STAT_LABELS[key]}
                     </td>
-                    <td className="text-center text-slate-400">{data.baseStats[key]}</td>
+                    <td className="text-center text-slate-400">
+                      <div>{data.baseStats[key]}</div>
+                      <div className="h-1 w-12 mx-auto bg-slate-700 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full rounded-full ${
+                            data.baseStats[key] >= 120
+                              ? 'bg-teal-400'
+                              : data.baseStats[key] >= 90
+                                ? 'bg-green-500'
+                                : data.baseStats[key] >= 60
+                                  ? 'bg-yellow-500'
+                                  : 'bg-red-500'
+                          }`}
+                          style={{ width: `${Math.min(100, (data.baseStats[key] / 180) * 100)}%` }}
+                        />
+                      </div>
+                    </td>
                     <td className="text-center">
                       <input
                         type="number"

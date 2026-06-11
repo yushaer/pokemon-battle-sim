@@ -27,14 +27,16 @@ export async function fetchPokemon(nameOrId) {
     types: data.types.map((t) => t.type.name),
     baseStats,
     sprites: {
+      // Newer generations often lack back sprites — fall back to front.
       front: data.sprites.front_default,
-      back: data.sprites.back_default,
+      back: data.sprites.back_default || data.sprites.front_default,
       frontAnim:
         data.sprites.versions?.['generation-v']?.['black-white']?.animated?.front_default ||
         data.sprites.front_default,
       backAnim:
         data.sprites.versions?.['generation-v']?.['black-white']?.animated?.back_default ||
-        data.sprites.back_default,
+        data.sprites.back_default ||
+        data.sprites.front_default,
     },
     // raw move list (names only); detailed move data fetched on demand
     movePool: data.moves.map((m) => m.move.name),

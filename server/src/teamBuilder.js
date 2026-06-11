@@ -58,7 +58,9 @@ export async function buildBattlePokemon(slot) {
     sleepTurns: 0,
     toxicCounter: 1,
     flinched: false,
-    volatile: { aquaRing: false, ingrained: false, leechSeed: false },
+    protected: false,
+    protectCounter: 0,
+    volatile: { aquaRing: false, ingrained: false, leechSeed: false, confused: 0 },
     boosts: {
       attack: 0,
       defense: 0,

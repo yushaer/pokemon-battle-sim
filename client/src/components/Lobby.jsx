@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react';
 import { socket } from '../socket';
 import { teamsApi } from '../api/auth';
+import { getPokemonList } from '../api/pokeapi';
+
+const SPRITE_CDN = 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon';
 
 const STATUS_LABEL = {
   idle: { text: 'Available', cls: 'text-green-400' },
@@ -16,6 +19,13 @@ export default function Lobby({ user, activeTeamId, setActiveTeamId, onUserUpdat
   const [outgoing, setOutgoing] = useState(null); // { challengeId, toUsername }
   const [queue, setQueue] = useState(null); // status string
   const [notice, setNotice] = useState(null);
+  const [dexMap, setDexMap] = useState({}); // species name -> national dex id
+
+  useEffect(() => {
+    getPokemonList()
+      .then((list) => setDexMap(Object.fromEntries(list.map((p) => [p.name, p.id]))))
+      .catch(() => {});
+  }, []);
 
   const teams = user.teams || [];
   const activeTeam = teams.find((t) => t.id === activeTeamId) || null;
@@ -177,15 +187,26 @@ export default function Lobby({ user, activeTeamId, setActiveTeamId, onUserUpdat
                       <span className="text-[8px] bg-yellow-400 text-black px-1.5 py-0.5 rounded">ACTIVE</span>
                     )}
                   </div>
-                  <div className="flex flex-wrap gap-1 mt-1">
-                    {t.slots.map((s, i) => (
-                      <span
-                        key={i}
-                        className="text-[9px] capitalize bg-slate-700 rounded px-1.5 py-0.5 text-slate-300"
-                      >
-                        {s.species}
-                      </span>
-                    ))}
+                  <div className="flex flex-wrap items-center gap-1 mt-1">
+                    {t.slots.map((s, i) =>
+                      dexMap[s.species] ? (
+                        <img
+                          key={i}
+                          src={`${SPRITE_CDN}/${dexMap[s.species]}.png`}
+                          alt={s.species}
+                          title={s.species}
+                          loading="lazy"
+                          className="w-9 h-9 pixelated"
+                        />
+                      ) : (
+                        <span
+                          key={i}
+                          className="text-[9px] capitalize bg-slate-700 rounded px-1.5 py-0.5 text-slate-300"
+                        >
+                          {s.species}
+                        </span>
+                      ),
+                    )}
                   </div>
                 </button>
                 <div className="flex flex-col gap-1">
@@ -238,10 +259,15 @@ export default function Lobby({ user, activeTeamId, setActiveTeamId, onUserUpdat
             {online.map((u) => {
               const st = STATUS_LABEL[u.status] || STATUS_LABEL.idle;
               return (
-                <div key={u.userId} className="flex items-center justify-between rounded-lg bg-slate-900 border border-slate-700 px-3 py-2">
-                  <div>
-                    <span className="text-sm capitalize">{u.username}</span>
-                    <span className={`ml-2 text-[10px] ${st.cls}`}>● {st.text}</span>
+                <div key={u.userId} className="flex items-center justify-between rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 hover:border-slate-500 transition">
+                  <div className="flex items-center gap-2.5">
+                    <span className="flex items-center justify-center w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-purple-700 text-xs font-bold uppercase">
+                      {u.username.slice(0, 1)}
+                    </span>
+                    <div>
+                      <span className="text-sm capitalize">{u.username}</span>
+                      <span className={`block text-[10px] ${st.cls}`}>● {st.text}</span>
+                    </div>
                   </div>
                   <button
                     onClick={() => challenge(u)}

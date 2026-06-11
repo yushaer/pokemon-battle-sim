@@ -12,9 +12,12 @@ import {
   isChargeMove,
   CHARGE_MOVES,
   effectiveSpeed,
+  effectiveAttack,
+  effectiveDefense,
   mapAilment,
   statusImmune,
   clampStage,
+  accStageMultiplier,
 } from './damage.js';
 
 let battleCounter = 0;
@@ -194,8 +197,10 @@ function doSwitch(battle, playerId, targetIndex, events, silentFrom = false) {
     leaving.charging = null;
     leaving.semiInvulnerable = false;
     leaving.flinched = false;
+    leaving.protected = false;
+    leaving.protectCounter = 0;
     leaving.boosts = emptyBoosts();
-    leaving.volatile = { aquaRing: false, ingrained: false, leechSeed: false };
+    leaving.volatile = { aquaRing: false, ingrained: false, leechSeed: false, confused: 0 };
   }
   player.activeIndex = targetIndex;
   const incoming = player.team[targetIndex];
@@ -249,12 +254,15 @@ function executeMove(battle, attackerId, moveIndex, events) {
   const defender = active(battle, defenderId);
   let move = attacker.moves[moveIndex];
 
-  // --- can the Pokemon act at all? (sleep / freeze / paralysis / flinch) ---
-  if (!canMove(attacker, attackerId, events)) {
+  // --- can the Pokemon act at all? (sleep / freeze / confusion / para / flinch) ---
+  if (!canMove(battle, attacker, attackerId, events)) {
     attacker.charging = null;
     attacker.semiInvulnerable = false;
     return;
   }
+
+  // Using anything other than Protect/Detect resets its success ladder.
+  if (move.name !== 'protect' && move.name !== 'detect') attacker.protectCounter = 0;
 
   // --- out of PP? fall back to Struggle if NOTHING is usable ---
   if (move.currentPp != null && move.currentPp <= 0) {
@@ -302,14 +310,24 @@ function executeMove(battle, attackerId, moveIndex, events) {
     text: `${cap(attacker.name)} used ${prettyMove(move.name)}!`,
   });
 
-  // --- accuracy / invulnerability ---
+  // --- protection / accuracy / invulnerability ---
+  const targetsSelf = (move.target || '').includes('user');
+  if (!targetsSelf && defender.protected && !defender.fainted) {
+    events.push({ type: 'text', text: `${cap(defender.name)} protected itself!` });
+    return;
+  }
   if (defender.semiInvulnerable) {
     events.push({ type: 'miss', side: defenderId, text: `${cap(attacker.name)}'s attack missed!` });
     return;
   }
-  if (move.accuracy != null && Math.random() * 100 > move.accuracy) {
-    events.push({ type: 'miss', side: defenderId, text: `${cap(attacker.name)}'s attack missed!` });
-    return;
+  if (move.accuracy != null) {
+    // Accuracy/evasion stages: net stage feeds the 3-based multiplier ladder.
+    const netStage = (attacker.boosts?.accuracy || 0) - (defender.boosts?.evasion || 0);
+    const hitChance = move.accuracy * accStageMultiplier(netStage);
+    if (Math.random() * 100 > hitChance) {
+      events.push({ type: 'miss', side: defenderId, text: `${cap(attacker.name)}'s attack missed!` });
+      return;
+    }
   }
 
   // --- status / non-damaging moves now have real effects ---
@@ -379,8 +397,12 @@ function executeMove(battle, attackerId, moveIndex, events) {
 
   const meta = move.meta || {};
   if (meta.ailment && meta.ailment !== 'none' && meta.ailmentChance > 0 && roll(meta.ailmentChance)) {
-    const st = mapAilment(meta.ailment, move.name);
-    if (st) applyStatus(defender, defenderId, st, events);
+    if (meta.ailment === 'confusion') {
+      applyConfusion(defender, events);
+    } else {
+      const st = mapAilment(meta.ailment, move.name);
+      if (st) applyStatus(defender, defenderId, st, events);
+    }
   }
   if (move.statChanges?.length && meta.statChance > 0 && roll(meta.statChance)) {
     const toUser = (move.target || '').includes('user');
@@ -392,7 +414,7 @@ function executeMove(battle, attackerId, moveIndex, events) {
 
 // Moves whose real effect is a recurring "volatile" not captured by PokeAPI's
 // numeric meta fields (meta.healing is 0 for these). Handled by name.
-const SPECIAL_MOVES = new Set(['aqua-ring', 'ingrain', 'leech-seed']);
+const SPECIAL_MOVES = new Set(['aqua-ring', 'ingrain', 'leech-seed', 'protect', 'detect']);
 
 // Apply the primary effect of a non-damaging move.
 function applyStatusMove(battle, attackerId, defenderId, move, events) {
@@ -423,6 +445,9 @@ function applyStatusMove(battle, attackerId, defenderId, move, events) {
     const toUser = (move.target || '').includes('user'); // e.g. Rest
     const tgtId = toUser ? attackerId : defenderId;
     if (applyStatus(active(battle, tgtId), tgtId, st, events)) didSomething = true;
+  } else if (meta.ailment === 'confusion') {
+    // Confuse Ray, Supersonic, Swagger-likes.
+    if (applyConfusion(defender, events)) didSomething = true;
   }
 
   // Healing moves (Recover, Roost, ...).
@@ -449,7 +474,8 @@ function applyStatusMove(battle, attackerId, defenderId, move, events) {
 }
 
 function ensureVolatile(p) {
-  if (!p.volatile) p.volatile = { aquaRing: false, ingrained: false, leechSeed: false };
+  if (!p.volatile) p.volatile = { aquaRing: false, ingrained: false, leechSeed: false, confused: 0 };
+  if (p.volatile.confused == null) p.volatile.confused = 0;
   return p.volatile;
 }
 
@@ -481,9 +507,35 @@ function applySpecialMove(battle, attackerId, defenderId, move, events) {
       dv.leechSeed = true;
       events.push({ type: 'text', text: `${cap(defender.name)} was seeded!` });
       return true;
+    case 'protect':
+    case 'detect': {
+      // Success chance drops to 1/3^n for consecutive uses.
+      const chance = 1 / Math.pow(3, attacker.protectCounter || 0);
+      if (Math.random() < chance) {
+        attacker.protected = true;
+        attacker.protectCounter = (attacker.protectCounter || 0) + 1;
+        events.push({ type: 'text', text: `${cap(attacker.name)} protected itself!` });
+        return true;
+      }
+      attacker.protectCounter = 0;
+      return fail(attackerId, events);
+    }
     default:
       return false;
   }
+}
+
+// Confusion is a volatile, separate from major status. Returns true if applied.
+function applyConfusion(target, events) {
+  if (!target || target.fainted) return false;
+  const v = ensureVolatile(target);
+  if (v.confused > 0) {
+    events.push({ type: 'text', text: 'But it failed!' });
+    return false;
+  }
+  v.confused = 2 + Math.floor(Math.random() * 4); // 2–5 turns incl. snap-out
+  events.push({ type: 'text', text: `${cap(target.name)} became confused!` });
+  return true;
 }
 
 function fail(sideId, events) {
@@ -529,29 +581,49 @@ function healPokemon(battle, sideId, amount, text, events) {
 }
 
 // --- can-move gate ---
-function canMove(p, sideId, events) {
+function canMove(battle, p, sideId, events) {
   if (p.status === 'sleep') {
     p.sleepTurns -= 1;
     if (p.sleepTurns <= 0) {
       p.status = null;
       events.push({ type: 'text', text: `${cap(p.name)} woke up!` });
-      return true;
+    } else {
+      events.push({ type: 'text', text: `${cap(p.name)} is fast asleep.` });
+      return false;
     }
-    events.push({ type: 'text', text: `${cap(p.name)} is fast asleep.` });
-    return false;
   }
   if (p.status === 'freeze') {
     if (Math.random() < 0.2) {
       p.status = null;
       events.push({ type: 'text', text: `${cap(p.name)} thawed out!` });
-      return true;
+    } else {
+      events.push({ type: 'text', text: `${cap(p.name)} is frozen solid!` });
+      return false;
     }
-    events.push({ type: 'text', text: `${cap(p.name)} is frozen solid!` });
-    return false;
   }
   if (p.flinched) {
     events.push({ type: 'text', text: `${cap(p.name)} flinched and couldn't move!` });
     return false;
+  }
+  // Confusion: counts down each action; 33% chance to hit itself instead.
+  const v = ensureVolatile(p);
+  if (v.confused > 0) {
+    v.confused -= 1;
+    if (v.confused <= 0) {
+      events.push({ type: 'text', text: `${cap(p.name)} snapped out of its confusion!` });
+    } else {
+      events.push({ type: 'text', text: `${cap(p.name)} is confused!` });
+      if (Math.random() < 1 / 3) {
+        // 40-power typeless physical hit against itself.
+        const atk = effectiveAttack(p, false);
+        const def = effectiveDefense(p, false);
+        const baseDmg =
+          Math.floor(Math.floor((Math.floor((2 * 100) / 5 + 2) * 40 * atk) / def) / 50) + 2;
+        const dmg = Math.max(1, Math.floor(baseDmg * (0.85 + Math.random() * 0.15)));
+        damagePokemon(battle, sideId, dmg, `${cap(p.name)} hurt itself in its confusion!`, events);
+        return false;
+      }
+    }
   }
   if (p.status === 'paralysis' && Math.random() < 0.25) {
     events.push({ type: 'text', text: `${cap(p.name)} is paralyzed! It can't move!` });
@@ -687,8 +759,12 @@ function endOfTurn(battle, events) {
     }
     if (dmg > 0) damagePokemon(battle, id, dmg, text, events);
   }
-  // Flinch only lasts the turn it was inflicted.
-  for (const id of battle.order) active(battle, id).flinched = false;
+  // Flinch and Protect only last the turn they were used.
+  for (const id of battle.order) {
+    const p = active(battle, id);
+    p.flinched = false;
+    p.protected = false;
+  }
 }
 
 // --- faint helper ---
@@ -783,6 +859,7 @@ export function serializeFor(battle, playerId) {
       id: opp.id,
       name: opp.name,
       remaining: aliveCount(opp),
+      teamSize: opp.team.length,
       active: publicPokemon(opp.team[opp.activeIndex]),
     },
   };

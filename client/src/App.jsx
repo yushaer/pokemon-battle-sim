@@ -97,12 +97,27 @@ export default function App() {
 
   return (
     <div className="min-h-screen w-full">
-      <header className="flex items-center justify-between px-6 py-3 bg-slate-900/80 border-b border-slate-700">
-        <h1 className="font-pixel text-sm sm:text-base text-yellow-300">⚔ Pokémon Battle Sim</h1>
+      <header className="sticky top-0 z-40 flex items-center justify-between px-6 py-3 bg-slate-900/90 backdrop-blur border-b border-slate-700/80 shadow-lg shadow-black/20">
+        <div className="flex items-center gap-2.5">
+          <span className="pokeball-logo" />
+          <h1 className="font-pixel text-sm sm:text-base text-yellow-300 drop-shadow-[0_2px_0_rgba(0,0,0,0.4)]">
+            Pokémon Battle Sim
+          </h1>
+        </div>
         {user && (
-          <span className={`text-xs px-2 py-1 rounded ${connected ? 'bg-green-700' : 'bg-red-700'}`}>
-            {connected ? 'online' : 'connecting…'}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="hidden sm:inline text-xs text-slate-400 capitalize">{user.username}</span>
+            <span
+              className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border ${
+                connected
+                  ? 'bg-green-900/60 border-green-600 text-green-300'
+                  : 'bg-red-900/60 border-red-600 text-red-300'
+              }`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-green-400 animate-pulse' : 'bg-red-400'}`} />
+              {connected ? 'online' : 'connecting…'}
+            </span>
+          </div>
         )}
       </header>
 

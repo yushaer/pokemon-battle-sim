@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { getPokemonList, getPokemon } from '../api/pokeapi';
+import { useEffect, useMemo, useState } from 'react';
+import { getPokemonList, getPokemon, GENERATIONS } from '../api/pokeapi';
 import { teamsApi } from '../api/auth';
 import { STAT_KEYS } from '../utils/natures';
 import PokemonEditor from './PokemonEditor.jsx';
@@ -10,7 +10,8 @@ const fullIvs = () => Object.fromEntries(STAT_KEYS.map((k) => [k, 31]));
 // Builds/edits a team of up to 6 Pokemon and saves it to the user's account.
 // All data fetched dynamically from PokeAPI.
 export default function TeamBuilder({ initialTeam, onSaved, onCancel }) {
-  const [names, setNames] = useState([]);
+  const [names, setNames] = useState([]); // [{ name, id }]
+  const [gen, setGen] = useState(0); // index into GENERATIONS
   const [pick, setPick] = useState('');
   const [team, setTeam] = useState([]); // hydrated slots
   const [editing, setEditing] = useState(0);
@@ -21,8 +22,14 @@ export default function TeamBuilder({ initialTeam, onSaved, onCancel }) {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    getPokemonList(386).then(setNames).catch((e) => setError(String(e)));
+    getPokemonList().then(setNames).catch((e) => setError(String(e)));
   }, []);
+
+  // Names filtered to the selected generation (drives the datalist).
+  const filteredNames = useMemo(() => {
+    const range = GENERATIONS[gen];
+    return names.filter((n) => n.id >= range.min && n.id <= range.max);
+  }, [names, gen]);
 
   // Re-hydrate a saved team (fetch each species' data for the editor).
   useEffect(() => {
@@ -140,18 +147,37 @@ export default function TeamBuilder({ initialTeam, onSaved, onCancel }) {
           />
         </div>
         <div>
-          <label className="block text-[10px] text-slate-400 mb-1">Add Pokémon</label>
+          <label className="block text-[10px] text-slate-400 mb-1">Generation</label>
+          <select
+            value={gen}
+            onChange={(e) => setGen(Number(e.target.value))}
+            className="bg-slate-900 border border-slate-600 rounded px-2 py-2 text-sm"
+          >
+            {GENERATIONS.map((g, i) => (
+              <option key={g.label} value={i}>
+                {g.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="block text-[10px] text-slate-400 mb-1">
+            Add Pokémon {names.length === 0 ? '(loading list…)' : `(${filteredNames.length} available)`}
+          </label>
           <div className="flex gap-2">
             <input
               list="pokemon-names"
               value={pick}
               onChange={(e) => setPick(e.target.value.toLowerCase())}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') addPokemon(pick);
+              }}
               placeholder="pikachu"
               className="bg-slate-900 border border-slate-600 rounded px-3 py-2 text-sm"
             />
             <datalist id="pokemon-names">
-              {names.map((n) => (
-                <option key={n} value={n} />
+              {filteredNames.map((n) => (
+                <option key={n.name} value={n.name} />
               ))}
             </datalist>
             <button

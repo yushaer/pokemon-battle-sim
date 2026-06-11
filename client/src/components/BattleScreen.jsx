@@ -4,7 +4,13 @@ import HealthBar from './HealthBar.jsx';
 import BattleLog from './BattleLog.jsx';
 import ActionMenu from './ActionMenu.jsx';
 import StatsPanel from './StatsPanel.jsx';
-import MoveEffect from './MoveEffect.jsx';
+import {
+  playMoveFx,
+  playStatusFx,
+  playImpactShake,
+  playFaintFx,
+  playSwitchInFx,
+} from '../fx/battleFx.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -54,7 +60,12 @@ export default function BattleScreen({ initialState, onLeave }) {
   const [lunge, setLunge] = useState(null); // 'you' | 'opp'
   const [result, setResult] = useState(null); // win/lose overlay text
   const [opponentChosen, setOpponentChosen] = useState(false);
-  const [fx, setFx] = useState(null); // active move-effect overlay
+  const [critFlash, setCritFlash] = useState(null); // 'you' | 'opp' on crits
+
+  // Element refs for the GSAP effect layer.
+  const fieldRef = useRef(null);
+  const youSpriteRef = useRef(null);
+  const oppSpriteRef = useRef(null);
 
   const displayRef = useRef(display);
   const stateRef = useRef(state);
@@ -67,7 +78,7 @@ export default function BattleScreen({ initialState, onLeave }) {
       displayRef.current = next;
       return next;
     });
-  const pushLog = (text) => text && setLog((prev) => [...prev, text]);
+  const pushLog = (text, kind = 'info') => text && setLog((prev) => [...prev, { text, kind }]);
 
   // --- socket wiring ---
   useEffect(() => {
@@ -112,23 +123,27 @@ export default function BattleScreen({ initialState, onLeave }) {
       const mine = ev.side === myId;
       switch (ev.type) {
         case 'move': {
-          pushLog(ev.text);
+          pushLog(ev.text, 'move');
           // attacker lunges toward the opponent
           setLunge(mine ? 'you' : 'opp');
-          // type-keyed effect overlay (damaging moves only)
-          if (ev.category && ev.category !== 'status') {
-            setFx({
-              id: `${Date.now()}_${Math.random()}`,
-              type: ev.moveType,
+          const atkEl = mine ? youSpriteRef.current : oppSpriteRef.current;
+          const tgtEl = mine ? oppSpriteRef.current : youSpriteRef.current;
+          if (ev.category === 'status') {
+            await playStatusFx(fieldRef.current, atkEl, ev.moveType);
+          } else if (ev.category) {
+            // GSAP-choreographed, type-keyed move animation
+            await playMoveFx({
+              container: fieldRef.current,
+              attackerEl: atkEl,
+              targetEl: tgtEl,
+              moveType: ev.moveType,
               category: ev.category,
-              attacker: mine ? 'you' : 'opp',
-              target: mine ? 'opp' : 'you',
             });
+          } else {
+            await sleep(500);
           }
-          await sleep(350);
           setLunge(null);
-          await sleep(450);
-          setFx(null);
+          await sleep(250);
           break;
         }
         case 'charge': {
@@ -144,9 +159,12 @@ export default function BattleScreen({ initialState, onLeave }) {
             [losing]: { ...prev[losing], currentHp: ev.newHp },
           }));
           setShake(losing);
-          if (ev.text) pushLog(ev.text);
+          if (ev.crit) setCritFlash(losing);
+          playImpactShake(fieldRef.current, ev.crit);
+          if (ev.text) pushLog(ev.text, ev.crit ? 'crit' : 'damage');
           await sleep(900); // let the HP bar drain smoothly (700ms transition)
           setShake(null);
+          setCritFlash(null);
           await sleep(700); // the spec's 1–2s pause between phases
           break;
         }
@@ -156,7 +174,7 @@ export default function BattleScreen({ initialState, onLeave }) {
             ...prev,
             [healed]: { ...prev[healed], currentHp: ev.newHp },
           }));
-          if (ev.text) pushLog(ev.text);
+          if (ev.text) pushLog(ev.text, 'heal');
           await sleep(900);
           break;
         }
@@ -166,7 +184,7 @@ export default function BattleScreen({ initialState, onLeave }) {
             ...prev,
             [afflicted]: { ...prev[afflicted], status: ev.status },
           }));
-          if (ev.text) pushLog(ev.text);
+          if (ev.text) pushLog(ev.text, 'status');
           setShake(afflicted);
           await sleep(700);
           setShake(null);
@@ -179,7 +197,7 @@ export default function BattleScreen({ initialState, onLeave }) {
             ...prev,
             [who]: { ...prev[who], boosts: { ...prev[who].boosts, [ev.stat]: ev.stage } },
           }));
-          if (ev.text) pushLog(ev.text);
+          if (ev.text) pushLog(ev.text, 'boost');
           await sleep(700);
           break;
         }
@@ -192,11 +210,12 @@ export default function BattleScreen({ initialState, onLeave }) {
         }
         case 'faint': {
           const fainted = mine ? 'you' : 'opp';
+          playFaintFx(fieldRef.current, fainted === 'you' ? youSpriteRef.current : oppSpriteRef.current);
           setDisp((prev) => ({
             ...prev,
             [fainted]: { ...prev[fainted], fainted: true },
           }));
-          pushLog(ev.text);
+          pushLog(ev.text, 'faint');
           await sleep(1000);
           break;
         }
@@ -204,15 +223,17 @@ export default function BattleScreen({ initialState, onLeave }) {
           if (mine) {
             const incoming = stateAfter.you.team[ev.toIndex];
             setDisp((prev) => ({ ...prev, you: selfView(incoming) }));
+            playSwitchInFx(youSpriteRef.current);
           } else {
             setDisp((prev) => ({ ...prev, opp: oppView(ev.pokemon) }));
+            playSwitchInFx(oppSpriteRef.current);
           }
-          pushLog(ev.text);
+          pushLog(ev.text, 'move');
           await sleep(900);
           break;
         }
         case 'end': {
-          pushLog(ev.text);
+          pushLog(ev.text, 'end');
           await sleep(600);
           setResult({ won: ev.winnerSide === myId, text: ev.text });
           break;
@@ -285,8 +306,26 @@ export default function BattleScreen({ initialState, onLeave }) {
 
       {/* ---- Battle field ---- */}
       <div className="relative rounded-2xl overflow-hidden border-4 border-slate-700 shadow-2xl"
-           style={{ background: 'linear-gradient(180deg,#7dd3fc 0%,#bae6fd 55%,#86efac 55%,#4ade80 100%)' }}>
-        <div className="relative h-80 sm:h-96">
+           style={{ background: 'linear-gradient(180deg,#4aa8e8 0%,#8fd0f5 45%,#bae6fd 55%,#7ecf6f 56%,#4ade80 78%,#2eb568 100%)' }}>
+        <div ref={fieldRef} className="relative h-80 sm:h-96 overflow-hidden">
+          {/* Scenery: sun + drifting clouds */}
+          <div
+            className="absolute -top-8 -left-8 w-32 h-32 rounded-full opacity-70"
+            style={{ background: 'radial-gradient(circle, #fef9c3 0%, #fde047 35%, transparent 70%)' }}
+          />
+          <div className="absolute top-6 left-1/3 w-28 h-8 bg-white/60 rounded-full blur-sm animate-bobbing" />
+          <div className="absolute top-16 right-1/4 w-20 h-6 bg-white/50 rounded-full blur-sm animate-bobbing" style={{ animationDelay: '1.2s' }} />
+
+          {/* Battle platforms */}
+          <div
+            className="absolute right-2 top-[150px] sm:top-[170px] w-48 sm:w-56 h-14 rounded-[50%]"
+            style={{ background: 'radial-gradient(ellipse, rgba(34,120,60,0.45) 0%, rgba(34,120,60,0.25) 55%, transparent 75%)' }}
+          />
+          <div
+            className="absolute left-0 bottom-2 w-60 sm:w-72 h-16 rounded-[50%]"
+            style={{ background: 'radial-gradient(ellipse, rgba(34,120,60,0.45) 0%, rgba(34,120,60,0.25) 55%, transparent 75%)' }}
+          />
+
           {/* Opponent — top right */}
           <div className="absolute top-4 left-4">
             <HealthBar
@@ -297,33 +336,36 @@ export default function BattleScreen({ initialState, onLeave }) {
               types={display.opp.types}
               status={display.opp.status}
             />
-            <p className="text-[9px] text-slate-700 mt-1 ml-1">
-              {state.opponent.name} · {state.opponent.remaining} left
-            </p>
+            <div className="flex items-center gap-2 mt-1 ml-1">
+              <p className="text-[9px] text-slate-700 font-semibold">{state.opponent.name}</p>
+              <BallPips alive={state.opponent.remaining} total={state.opponent.teamSize || state.opponent.remaining} />
+            </div>
             <BoostChips boosts={display.opp.boosts} />
           </div>
           <div className="absolute top-6 right-8">
             <img
+              ref={oppSpriteRef}
               src={display.opp.sprite}
               alt={display.opp.name}
               className={`w-28 h-28 sm:w-36 sm:h-36 pixelated drop-shadow-xl transition-all duration-500 ${
-                display.opp.fainted ? 'opacity-0 translate-y-6' : ''
+                display.opp.fainted ? 'opacity-0 translate-y-6 grayscale' : ''
               } ${shake === 'opp' ? 'animate-shake' : ''} ${
-                lunge === 'opp' ? '-translate-x-4 translate-y-2' : ''
-              }`}
+                critFlash === 'opp' ? 'animate-flash' : ''
+              } ${lunge === 'opp' ? '-translate-x-4 translate-y-2' : ''}`}
             />
           </div>
 
           {/* Player — bottom left */}
           <div className="absolute bottom-6 left-8">
             <img
+              ref={youSpriteRef}
               src={display.you.sprite}
               alt={display.you.name}
               className={`w-32 h-32 sm:w-44 sm:h-44 pixelated drop-shadow-xl transition-all duration-500 ${
-                display.you.fainted ? 'opacity-0 translate-y-6' : 'animate-bobbing'
+                display.you.fainted ? 'opacity-0 translate-y-6 grayscale' : 'animate-bobbing'
               } ${shake === 'you' ? 'animate-shake' : ''} ${
-                lunge === 'you' ? 'translate-x-4 -translate-y-2' : ''
-              }`}
+                critFlash === 'you' ? 'animate-flash' : ''
+              } ${lunge === 'you' ? 'translate-x-4 -translate-y-2' : ''}`}
             />
           </div>
           <div className="absolute bottom-4 right-4">
@@ -336,11 +378,15 @@ export default function BattleScreen({ initialState, onLeave }) {
               status={display.you.status}
               showNumbers
             />
-            <p className="text-[9px] text-slate-700 mt-1 text-right mr-1">{state.you.name} (you)</p>
+            <div className="flex items-center justify-end gap-2 mt-1 mr-1">
+              <BallPips
+                alive={state.you.team.filter((p) => !p.fainted).length}
+                total={state.you.team.length}
+              />
+              <p className="text-[9px] text-slate-700 font-semibold">{state.you.name} (you)</p>
+            </div>
           </div>
 
-          {/* Move effect overlay (keyed so each move restarts the animation) */}
-          {fx && <MoveEffect key={fx.id} fx={fx} />}
         </div>
       </div>
 
@@ -373,7 +419,7 @@ export default function BattleScreen({ initialState, onLeave }) {
       {/* ---- Result overlay ---- */}
       {result && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-          <div className="bg-slate-800 rounded-2xl p-8 text-center border border-slate-600 max-w-sm">
+          <div className="overlay-pop bg-gradient-to-b from-slate-800 to-slate-900 rounded-2xl p-8 text-center border border-slate-600 max-w-sm shadow-2xl">
             <h2 className={`font-pixel text-lg mb-3 ${result.won ? 'text-green-400' : 'text-red-400'}`}>
               {result.won ? 'Victory!' : 'Defeat'}
             </h2>
@@ -400,6 +446,25 @@ const BOOST_LABELS = {
   accuracy: 'Acc',
   evasion: 'Eva',
 };
+
+// Pokéball pips showing each side's remaining team members.
+function BallPips({ alive, total }) {
+  return (
+    <div className="flex gap-1">
+      {Array.from({ length: total }).map((_, i) => (
+        <span
+          key={i}
+          className={`inline-block w-3 h-3 rounded-full border border-slate-800 ${
+            i < alive ? '' : 'grayscale opacity-40'
+          }`}
+          style={{
+            background: 'linear-gradient(180deg, #ef4444 0%, #ef4444 42%, #1e293b 42%, #1e293b 58%, #f8fafc 58%, #f8fafc 100%)',
+          }}
+        />
+      ))}
+    </div>
+  );
+}
 
 // Small stat-stage badges for the opponent (whose raw stats stay hidden).
 function BoostChips({ boosts = {} }) {
