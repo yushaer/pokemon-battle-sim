@@ -1,0 +1,15 @@
+{
+  "name": "pokemon-battle-sim",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Multiplayer Pokemon battle simulator (deploys as a single web service)",
+  "scripts": {
+    "build": "npm install --prefix client && npm run build --prefix client && npm install --prefix server",
+    "start": "node server/server.js",
+    "dev:server": "npm run dev --prefix server",
+    "dev:client": "npm run dev --prefix client"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

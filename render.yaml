@@ -1,0 +1,18 @@
+# Render blueprint: deploys the whole app as ONE free web service.
+# The build compiles the React client; the Node server serves it plus the
+# REST API and Socket.io websockets from a single URL.
+services:
+  - type: web
+    name: pokemon-battle-sim
+    runtime: node
+    plan: free
+    buildCommand: npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: MONGO_URI
+        sync: false # paste your MongoDB Atlas connection string in the dashboard
+      - key: JWT_SECRET
+        generateValue: true
+      - key: NODE_VERSION
+        value: 22.14.0

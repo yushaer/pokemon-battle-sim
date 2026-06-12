@@ -1,5 +1,7 @@
 // REST client for auth + team persistence. Stores the JWT in localStorage.
-const BASE = import.meta.env.VITE_SERVER_URL || 'http://localhost:4000';
+const BASE =
+  import.meta.env.VITE_SERVER_URL ||
+  (import.meta.env.DEV ? 'http://localhost:4000' : window.location.origin);
 const TOKEN_KEY = 'pbs_token';
 
 export function getToken() {

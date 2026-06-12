@@ -86,7 +86,23 @@ private window) and challenge across the two.
 | `PORT` | server port | `4000` |
 | `CLIENT_ORIGIN` | allowed CORS origin | `http://localhost:5173` |
 
-Client: `VITE_SERVER_URL` (default `http://localhost:4000`).
+Client: `VITE_SERVER_URL` (dev default `http://localhost:4000`; production builds
+default to same-origin, since the server serves the built client).
+
+## Deploying (Render, free tier)
+
+The repo ships a [render.yaml](render.yaml) blueprint that runs everything as
+**one web service**: the build compiles the React client, and the Node server
+serves the static build + REST API + Socket.io websockets from a single URL.
+
+1. In MongoDB Atlas → **Network Access**, allow `0.0.0.0/0` (Render's IPs are dynamic).
+2. Go to [dashboard.render.com](https://dashboard.render.com) → **New → Blueprint**,
+   connect the GitHub repo. Render reads `render.yaml` automatically.
+3. When prompted, paste your **`MONGO_URI`** (the `JWT_SECRET` is auto-generated).
+4. Deploy. Your app is live at `https://<service-name>.onrender.com`.
+
+Notes: the free tier sleeps after ~15 min idle (first visit takes ~30–60 s to
+wake) and restarts drop in-progress battles. Accounts/teams persist in Atlas.
 
 > ⚠️ `server/.env` holds real credentials and is git-ignored — **never commit it**.
 > Keep real secrets out of `.env.example`.
